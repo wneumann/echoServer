@@ -11,7 +11,7 @@
 import Foundation
 import Network
 
-// MARK: IO Shit that I'm not sure we really need
+// MARK: IO Shit that we don't really need
 // see https://viewsourcecode.org/snaptoken/kilo/02.enteringRawMode.html
 //func enableRawMode(fileHandle: FileHandle) -> termios {
 //    var raw = termios()
@@ -38,12 +38,17 @@ var psk: UnsafeMutablePointer<Int8>? = nil
 var timeout = 10.0
 var portNumber: UInt16 = 7
 
+var reverse = false
+var capitalize = false
+
 // MARK: Parse options
 let usage = """
 Usage:
 echod [-uh?] [-k key] [port]
 -u          use udp instead of tcp
 -h, -?      help
+-r          reverse echoed string
+-c          upercase echoed
 -k key      TLS/DTLS with TLS_PSK key
 -w timeout  cancel raw udp connection silently
             when receiveloop is idle for more
@@ -59,10 +64,12 @@ func die(_ msg: String) -> Never {
 
 guard CommandLine.argc > 1 else { die(usage) }
 
-while case let opt = getopt(CommandLine.argc, CommandLine.unsafeArgv, "uh?k:w:"), opt != -1 {
+while case let opt = getopt(CommandLine.argc, CommandLine.unsafeArgv, "uhrc?k:w:"), opt != -1 {
     switch UnicodeScalar(CUnsignedChar(opt)) {
     case "u": isTCP = false
     case "h", "?": die(usage)
+    case "r": reverse = true
+    case "c": capitalize = true
     case "k": psk = optarg
     case "w": timeout = Double(String(cString: optarg))!
     default: die("Unknown option: -\(UnicodeScalar(CUnsignedChar(opt)))\n\n\(usage)")
@@ -97,6 +104,7 @@ if let psk = psk {
     nwParams = isTCP ? NWParameters.tcp : NWParameters.udp
 }
 
+// MARK: The receive/echo function
 let echoQ = DispatchQueue(label: "echoQ", qos: .default)
 let dispatchGroup = DispatchGroup()
 
@@ -109,8 +117,14 @@ func receive(connection: NWConnection) {
             return
         }
         print(connection.endpoint, "received", data)
-        print(connection.endpoint, "send", data)
-        connection.send(content: data, completion: .contentProcessed({ (e) in
+        
+        var str = String(data: data, encoding: .utf8)!
+        if capitalize { str = str.uppercased() }
+        if reverse { str = String(str.reversed()) }
+        let sendData = str.data(using: .utf8)!
+        
+        print(connection.endpoint, "send", sendData)
+        connection.send(content: sendData, completion: .contentProcessed({ (e) in
             print(connection.endpoint, "sent")
             if let e = e {
                 print(connection.endpoint, "send error:", e, ", cancel()")
@@ -128,6 +142,7 @@ func receive(connection: NWConnection) {
 
 var listener: NWListener? = nil
 
+// MARK: Create and start listener
 var killListener: DispatchWorkItem?
 killListener = DispatchWorkItem {
     print("Error: \(type) port \(portNumber) already in use")
